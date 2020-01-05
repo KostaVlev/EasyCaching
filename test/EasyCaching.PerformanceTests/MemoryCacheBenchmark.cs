@@ -30,6 +30,50 @@ namespace EasyCaching.PerformanceTests
 
     [MemoryDiagnoser]
     [AllStatisticsColumn]
+    public class SetWithLimitsBenchmark
+    {
+        private readonly MemoryCache _msCacheWithoutLimit = new MemoryCache(new MemoryCacheOptions() { });
+
+        private readonly MemoryCache _msCache = new MemoryCache(new MemoryCacheOptions() { SizeLimit = 10000, CompactionPercentage = 0.9 });
+
+        private readonly InMemoryCaching _cache =
+            new InMemoryCaching(EasyCachingConstValue.DefaultInMemoryName, new InMemoryCachingOptions());
+
+        private readonly MemoryCacheEntryOptions _mOptions = new MemoryCacheEntryOptions()
+                .SetSize(1)
+                .SetAbsoluteExpiration(System.TimeSpan.FromSeconds(5));
+
+
+        [Benchmark]
+        public void MS_WithoutLimit()
+        {
+            for (int i = 0; i < 15000; i++)
+            {
+                _msCacheWithoutLimit.Set($"ms-key-out-{i}", "ms-value", System.TimeSpan.FromSeconds(5));
+            }
+        }
+
+        [Benchmark]
+        public void MS_WithLimit()
+        {
+            for (int i = 0; i < 15000; i++)
+            {
+                _msCache.Set($"ms-key-{i}", "ms-value", _mOptions);
+            }
+        }
+
+        [Benchmark]
+        public void EC()
+        {
+            for (int i = 0; i < 15000; i++)
+            {
+                _cache.Set($"ec-key-{i}", "ec-value", System.TimeSpan.FromSeconds(5));
+            }
+        }
+    }
+
+    [MemoryDiagnoser]
+    [AllStatisticsColumn]
     public class GetBenchmark
     {
         private readonly MemoryCache _msCache = new MemoryCache(new MemoryCacheOptions());

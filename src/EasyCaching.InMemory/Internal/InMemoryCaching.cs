@@ -14,6 +14,7 @@
         private DateTimeOffset _lastExpirationScan;
         private readonly InMemoryCachingOptions _options;
         private readonly string _name;
+        private long _cacheSize;
 
         public InMemoryCaching(string name, InMemoryCachingOptions optionsAccessor)
         {
@@ -23,9 +24,12 @@
             _options = optionsAccessor;
             _memory = new ConcurrentDictionary<string, CacheEntry>();
             _lastExpirationScan = SystemClock.UtcNow;
+            _cacheSize = 0;
         }
 
         public string ProviderName => this._name;
+
+        public int CacheSize => (int)Interlocked.Read(ref _cacheSize);
 
         public void Clear(string prefix = "")
         {
@@ -47,8 +51,11 @@
         }
 
         internal void RemoveExpiredKey(string key)
-        {
-            _memory.TryRemove(key, out _);
+        {            
+            if (_memory.TryRemove(key, out _))
+            {
+                Interlocked.Add(ref _cacheSize, -1);
+            }
         }
 
         public CacheValue<T> Get<T>(string key)
@@ -62,7 +69,7 @@
 
             if (cacheEntry.ExpiresAt < SystemClock.UtcNow)
             {
-                _memory.TryRemove(key, out _);
+                RemoveExpiredKey(key);
                 return CacheValue<T>.NoValue;
             }
 
@@ -89,7 +96,7 @@
 
             if (cacheEntry.ExpiresAt < SystemClock.UtcNow)
             {
-                _memory.TryRemove(key, out _);
+                RemoveExpiredKey(key);
                 return null;
             }
 
@@ -127,17 +134,17 @@
                 return false;
             }
 
-            if (_memory.Count >= _options.SizeLimit)
+            if (CacheSize >= _options.SizeLimit)
             {
                 // order by last access ticks 
                 // up to size limit, should remove 
-                var oldestList = _memory.ToArray()
-                                   .OrderBy(kvp => kvp.Value.LastAccessTicks)
-                                   .ThenBy(kvp => kvp.Value.InstanceNumber)
-                                   .Take(5)
-                                   .Select(kvp => kvp.Key);
+                //var oldestList = _memory.ToArray()
+                //                   .OrderBy(kvp => kvp.Value.LastAccessTicks)
+                //                   .ThenBy(kvp => kvp.Value.InstanceNumber)
+                //                   .Take(5)
+                //                   .Select(kvp => kvp.Key);
 
-                RemoveAll(oldestList);
+                //RemoveAll(oldestList);
             }
 
             CacheEntry deep = null;
@@ -157,22 +164,29 @@
                 deep = entry;
             }
 
-            if (addOnly)
-            {
-                if (!_memory.TryAdd(deep.Key, deep))
-                {
-                    if (!_memory.TryGetValue(deep.Key, out var existingEntry) || existingEntry.ExpiresAt >= SystemClock.UtcNow)
-                        return false;
+            AddOrUpdateEntry(deep, addOnly);
 
-                    _memory.AddOrUpdate(deep.Key, deep, (k, cacheEntry) => deep);
-                }
+            StartScanForExpiredItems();
+
+            return true;
+        }
+
+        private bool AddOrUpdateEntry(CacheEntry entry, bool addOnly)
+        {
+            if (_memory.TryAdd(entry.Key, entry))
+            {
+                Interlocked.Add(ref _cacheSize, 1);
             }
             else
             {
-                _memory.AddOrUpdate(deep.Key, deep, (k, cacheEntry) => deep);
-            }
+                if (addOnly)
+                {
+                    if (!_memory.TryGetValue(entry.Key, out var existingEntry) || existingEntry.ExpiresAt >= SystemClock.UtcNow)
+                        return false;
+                }
 
-            StartScanForExpiredItems();
+                _memory.AddOrUpdate(entry.Key, entry, (k, cacheEntry) => entry);
+            }
 
             return true;
         }
@@ -188,8 +202,10 @@
         {
             if (keys == null)
             {
-                int count = _memory.Count;
+                int count = CacheSize;
                 _memory.Clear();
+                Interlocked.Add(ref _cacheSize, -count);
+
                 return count;
             }
 
@@ -203,12 +219,22 @@
                     removed++;
             }
 
+            Interlocked.Add(ref _cacheSize, -removed);
+
             return removed;
         }
 
         public bool Remove(string key)
         {
-            return _memory.TryRemove(key, out _);
+            if (_memory.TryRemove(key, out _))
+            {
+                Interlocked.Add(ref _cacheSize, -1);
+                return true;
+            }
+            else
+            {
+                return false;
+            }            
         }
 
         public int RemoveByPrefix(string prefix)
